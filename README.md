@@ -56,8 +56,8 @@ brew install ffmpeg
 ### 2. Cloner et installer
 
 ```bash
-git clone <votre-repo>
-cd bonus
+git clone https://github.com/ADR3-Club/Bot-Stake-Bonus.git
+cd Bot-Stake-Bonus
 npm install
 ```
 
