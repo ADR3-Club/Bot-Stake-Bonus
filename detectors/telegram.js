@@ -47,21 +47,145 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
   }
 
-  // Connexion Telegram
-  const tg = new TelegramClient(new StringSession(string), apiId, apiHash, { connectionRetries: 5 });
-  await tg.start({
-    phoneNumber: () => input.text('Numéro de téléphone: '),
-    password:   () => input.text('Mot de passe (2FA si activée): '),
-    phoneCode:  () => input.text('Code reçu: '),
-    onError: (err) => console.error(err),
-  });
-  console.log('[telegram] connecté');
+  // Variables pour la reconnexion automatique
+  let tg = null;
+  let reconnectAttempts = 0;
+  let keepaliveInterval = null;
+  let isReconnecting = false;
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const KEEPALIVE_INTERVAL = 30000; // 30 secondes
 
-  // Sauvegarde éventuelle de la string session
-  const saved = tg.session.save();
-  if (!process.env.TG_STRING_SESSION || process.env.TG_STRING_SESSION !== saved) {
-    console.log('[telegram] String session:', saved);
+  // Fonction de connexion avec gestion d'erreur
+  async function connect() {
+    try {
+      console.log('[telegram] Tentative de connexion...');
+
+      // Créer nouveau client avec timeout augmenté
+      tg = new TelegramClient(new StringSession(string), apiId, apiHash, {
+        connectionRetries: 10,
+        timeout: 60000, // 60 secondes
+        requestRetries: 3,
+      });
+
+      // Connexion avec authentification
+      await tg.start({
+        phoneNumber: () => input.text('Numéro de téléphone: '),
+        password:   () => input.text('Mot de passe (2FA si activée): '),
+        phoneCode:  () => input.text('Code reçu: '),
+        onError: (err) => console.error('[telegram] Auth error:', err),
+      });
+
+      console.log('[telegram] ✓ Connecté avec succès');
+
+      // Sauvegarde éventuelle de la string session
+      const saved = tg.session.save();
+      if (!process.env.TG_STRING_SESSION || process.env.TG_STRING_SESSION !== saved) {
+        console.log('[telegram] String session:', saved);
+      }
+
+      // Réinitialiser le compteur de tentatives
+      reconnectAttempts = 0;
+      isReconnecting = false;
+
+      // Démarrer le keepalive
+      startKeepalive();
+
+      // Ajouter les event handlers
+      setupEventHandlers();
+
+      return true;
+    } catch (error) {
+      console.error('[telegram] ✗ Erreur de connexion:', error.message);
+      return false;
+    }
   }
+
+  // Fonction de reconnexion avec exponential backoff
+  async function reconnect() {
+    if (isReconnecting) {
+      console.log('[telegram] Reconnexion déjà en cours, attente...');
+      return;
+    }
+
+    isReconnecting = true;
+    reconnectAttempts++;
+
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      console.error('[telegram] ✗ Nombre maximum de tentatives de reconnexion atteint');
+      console.error('[telegram] ✗ Le bot nécessite un redémarrage manuel');
+      isReconnecting = false;
+      return;
+    }
+
+    // Exponential backoff: 2^attempts * 1000ms (max 5 minutes)
+    const delay = Math.min(Math.pow(2, reconnectAttempts) * 1000, 300000);
+    console.log(`[telegram] Tentative de reconnexion ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} dans ${delay/1000}s...`);
+
+    // Attendre avant de se reconnecter
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    // Arrêter le keepalive existant
+    stopKeepalive();
+
+    // Déconnecter proprement l'ancien client
+    try {
+      if (tg) {
+        await tg.disconnect();
+      }
+    } catch (e) {
+      // Ignorer les erreurs de déconnexion
+    }
+
+    // Tenter la reconnexion
+    const success = await connect();
+
+    if (!success) {
+      // Réessayer si échec
+      await reconnect();
+    }
+  }
+
+  // Fonction keepalive pour maintenir la connexion active
+  function startKeepalive() {
+    stopKeepalive(); // Arrêter l'ancien si existant
+
+    keepaliveInterval = setInterval(async () => {
+      try {
+        if (tg && tg.connected) {
+          // Ping simple avec getMe()
+          await tg.getMe();
+          if (debug) console.log('[telegram] ⟳ Keepalive ping OK');
+        } else {
+          console.warn('[telegram] ⚠ Connexion perdue détectée par keepalive');
+          await reconnect();
+        }
+      } catch (error) {
+        console.error('[telegram] ⚠ Keepalive error:', error.message);
+        // Ne pas reconnecter immédiatement, attendre la prochaine itération
+      }
+    }, KEEPALIVE_INTERVAL);
+
+    if (debug) console.log('[telegram] ⟳ Keepalive démarré (intervalle: 30s)');
+  }
+
+  // Fonction pour arrêter le keepalive
+  function stopKeepalive() {
+    if (keepaliveInterval) {
+      clearInterval(keepaliveInterval);
+      keepaliveInterval = null;
+      if (debug) console.log('[telegram] ⟳ Keepalive arrêté');
+    }
+  }
+
+  // Connexion initiale
+  const connected = await connect();
+  if (!connected) {
+    console.error('[telegram] ✗ Échec de la connexion initiale');
+    await reconnect();
+  }
+
+  // Initialiser l'OCR pour la détection des codes dans les images/vidéos
+  await initOCR();
 
   if (debug) {
     console.log('[telegram] watching:',
@@ -70,9 +194,6 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
   console.log('[telegram] Configured channels:',
     handles.size || ids.size ? `handles=[${[...handles]}], ids=[${[...ids]}]` : 'ALL CHATS');
-
-  // Initialiser l'OCR pour la détection des codes dans les images/vidéos
-  await initOCR();
 
   // Health ping (optionnel)
   if (process.env.TG_HEALTH_PING === '1') {
@@ -582,11 +703,71 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     if (debug) console.log('[telegram] Message ignored (no bonus detected)');
   };
 
-  // -------- Branchement des events
-  tg.addEventHandler(ev => handler(ev, 'NEW'), new NewMessage({}));
-  if (EditedCtor) {
-    tg.addEventHandler(ev => handler(ev, 'EDIT'), new EditedCtor({}));
-  } else {
-    console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
+  // -------- Fonction de configuration des event handlers
+  function setupEventHandlers() {
+    if (!tg) {
+      console.error('[telegram] ✗ Impossible de configurer les event handlers: client non initialisé');
+      return;
+    }
+
+    try {
+      // Supprimer les anciens handlers (au cas où)
+      tg.removeEventHandler();
+
+      // Ajouter les nouveaux handlers avec gestion d'erreur améliorée
+      tg.addEventHandler(async (ev) => {
+        try {
+          await handler(ev, 'NEW');
+        } catch (error) {
+          console.error('[telegram] ✗ Handler NEW error:', error.message);
+          // Ne pas reconnecter pour une erreur de handler
+        }
+      }, new NewMessage({}));
+
+      if (EditedCtor) {
+        tg.addEventHandler(async (ev) => {
+          try {
+            await handler(ev, 'EDIT');
+          } catch (error) {
+            console.error('[telegram] ✗ Handler EDIT error:', error.message);
+          }
+        }, new EditedCtor({}));
+      } else {
+        console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
+      }
+
+      if (debug) console.log('[telegram] ✓ Event handlers configurés');
+    } catch (error) {
+      console.error('[telegram] ✗ Erreur lors de la configuration des handlers:', error.message);
+    }
   }
+
+  // -------- Graceful shutdown
+  process.on('SIGINT', async () => {
+    console.log('\n[telegram] Arrêt gracieux demandé (SIGINT)...');
+    stopKeepalive();
+    if (tg) {
+      try {
+        await tg.disconnect();
+        console.log('[telegram] ✓ Déconnecté proprement');
+      } catch (e) {
+        console.error('[telegram] ✗ Erreur lors de la déconnexion:', e.message);
+      }
+    }
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    console.log('\n[telegram] Arrêt gracieux demandé (SIGTERM)...');
+    stopKeepalive();
+    if (tg) {
+      try {
+        await tg.disconnect();
+        console.log('[telegram] ✓ Déconnecté proprement');
+      } catch (e) {
+        console.error('[telegram] ✗ Erreur lors de la déconnexion:', e.message);
+      }
+    }
+    process.exit(0);
+  });
 }
