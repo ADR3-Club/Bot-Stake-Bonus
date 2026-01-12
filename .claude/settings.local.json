@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /B \"C:\\\\Users\\\\Chriis\\\\Documents\\\\GitHub\\\\Bot-Stake-Bonus\")",
+      "Bash(dir /B /A \"C:\\\\Users\\\\Chriis\\\\Documents\\\\GitHub\\\\Bot-Stake-Bonus\")",
+      "Bash(npm install)",
+      "Bash(npm audit:*)",
+      "Bash(node --check:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nv2.2.0 - Sécurité, Stabilité et Optimisations\n\nCorrections de sécurité:\n- Session Telegram masquée dans les logs \\(sauvegarde dans .session-backup\\)\n- Suppression de fluent-ffmpeg \\(obsolète\\) -> migration vers child_process\n- Validation des conditions avec whitelist et protection XSS\n\nCorrections de stabilité:\n- Event listeners Discord \\(ShardDisconnect, ShardError, etc.\\)\n- Reconnexion Telegram itérative \\(évite stack overflow\\)\n- Keepalive avec reconnexion immédiate sur erreur\n- Race condition SQLite corrigée avec locks en mémoire\n\nOptimisations:\n- OCR parallèle par batch de 3 frames\n- Nettoyage auto de la DB \\(entrées > 7 jours\\)\nEOF\n\\)\")"
+    ]
+  }
+}
