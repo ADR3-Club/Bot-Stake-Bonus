@@ -1,5 +1,6 @@
 # Environnement
 .env
+.session-backup
 node_modules/
 
 # Base de données

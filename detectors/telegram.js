@@ -77,10 +77,27 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
       console.log('[telegram] ✓ Connecté avec succès');
 
-      // Sauvegarde éventuelle de la string session
+      // Sauvegarde éventuelle de la string session (SÉCURISÉE)
       const saved = tg.session.save();
       if (!process.env.TG_STRING_SESSION || process.env.TG_STRING_SESSION !== saved) {
-        console.log('[telegram] String session:', saved);
+        console.log('[telegram] ⚠ Nouvelle session générée');
+        console.log('[telegram] Ajoutez cette ligne à votre .env :');
+        // Afficher uniquement les 10 premiers et 10 derniers caractères pour sécurité
+        const masked = `${saved.substring(0, 10)}...${saved.substring(saved.length - 10)}`;
+        console.log(`[telegram] TG_STRING_SESSION=${masked}`);
+        console.log('[telegram] Session complète sauvegardée dans .session-backup');
+        // Sauvegarde sécurisée dans un fichier
+        try {
+          fs.writeFileSync('.session-backup', saved, { mode: 0o600 });
+        } catch (e) {
+          // Sur Windows, mode 0o600 n'est pas supporté, utiliser writeFileSync simple
+          try {
+            fs.writeFileSync('.session-backup', saved);
+            console.log('[telegram] ✓ Fichier .session-backup créé');
+          } catch (e2) {
+            console.error('[telegram] ✗ Impossible de sauvegarder la session:', e2.message);
+          }
+        }
       }
 
       // Réinitialiser le compteur de tentatives
@@ -100,7 +117,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
   }
 
-  // Fonction de reconnexion avec exponential backoff
+  // Fonction de reconnexion avec exponential backoff (ITÉRATIVE - pas de récursion)
   async function reconnect() {
     if (isReconnecting) {
       console.log('[telegram] Reconnexion déjà en cours, attente...');
@@ -108,41 +125,48 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
 
     isReconnecting = true;
-    reconnectAttempts++;
 
-    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      console.error('[telegram] ✗ Nombre maximum de tentatives de reconnexion atteint');
-      console.error('[telegram] ✗ Le bot nécessite un redémarrage manuel');
-      isReconnecting = false;
-      return;
-    }
+    // Boucle itérative au lieu de récursion (évite stack overflow)
+    while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
 
-    // Exponential backoff: 2^attempts * 1000ms (max 5 minutes)
-    const delay = Math.min(Math.pow(2, reconnectAttempts) * 1000, 300000);
-    console.log(`[telegram] Tentative de reconnexion ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} dans ${delay/1000}s...`);
+      // Exponential backoff avec jitter pour éviter les reconnexions simultanées
+      const baseDelay = Math.min(Math.pow(2, reconnectAttempts) * 1000, 300000);
+      const jitter = Math.floor(Math.random() * 1000); // 0-1000ms de jitter
+      const delay = baseDelay + jitter;
 
-    // Attendre avant de se reconnecter
-    await new Promise(resolve => setTimeout(resolve, delay));
+      console.log(`[telegram] Tentative de reconnexion ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} dans ${Math.round(delay/1000)}s...`);
 
-    // Arrêter le keepalive existant
-    stopKeepalive();
+      // Attendre avant de se reconnecter
+      await new Promise(resolve => setTimeout(resolve, delay));
 
-    // Déconnecter proprement l'ancien client
-    try {
-      if (tg) {
-        await tg.disconnect();
+      // Arrêter le keepalive existant
+      stopKeepalive();
+
+      // Déconnecter proprement l'ancien client
+      try {
+        if (tg) {
+          await tg.disconnect();
+        }
+      } catch (e) {
+        // Ignorer les erreurs de déconnexion
       }
-    } catch (e) {
-      // Ignorer les erreurs de déconnexion
+
+      // Tenter la reconnexion
+      const success = await connect();
+
+      if (success) {
+        // Succès ! Réinitialiser et sortir
+        isReconnecting = false;
+        return;
+      }
+      // Échec : la boucle continue automatiquement
     }
 
-    // Tenter la reconnexion
-    const success = await connect();
-
-    if (!success) {
-      // Réessayer si échec
-      await reconnect();
-    }
+    // Nombre maximum de tentatives atteint
+    console.error('[telegram] ✗ Nombre maximum de tentatives de reconnexion atteint');
+    console.error('[telegram] ✗ Le bot nécessite un redémarrage manuel');
+    isReconnecting = false;
   }
 
   // Fonction keepalive pour maintenir la connexion active
@@ -161,7 +185,9 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
         }
       } catch (error) {
         console.error('[telegram] ⚠ Keepalive error:', error.message);
-        // Ne pas reconnecter immédiatement, attendre la prochaine itération
+        // Reconnexion immédiate en cas d'erreur de keepalive
+        console.warn('[telegram] ⚠ Déclenchement de la reconnexion suite à erreur keepalive');
+        await reconnect();
       }
     }, KEEPALIVE_INTERVAL);
 
@@ -226,6 +252,48 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
    * Format attendu : "Value: $X", "Total Drop Limit: $X,XXX", etc.
    * Retourne un tableau de { label, value }
    */
+  // Labels de conditions autorisés (whitelist pour sécurité)
+  const ALLOWED_CONDITION_LABELS = new Set([
+    'value', 'min bet', 'minimum bet', 'total drop limit', 'drop limit',
+    'type', 'minimum rank', 'rank', 'wagering', 'wager', 'expiry',
+    'currency', 'max claims', 'claims', 'claim', 'bonus', 'reward',
+    'amount', 'prize', 'limit', 'duration', 'level', 'tier'
+  ]);
+
+  /**
+   * Valide et nettoie une condition pour éviter XSS et injections
+   * @returns {Object|null} - Condition nettoyée ou null si invalide
+   */
+  function sanitizeCondition(label, value) {
+    // Vérifier la longueur
+    if (!label || !value || label.length > 50 || value.length > 200) {
+      return null;
+    }
+
+    const labelLower = label.toLowerCase().trim();
+
+    // Vérifier si le label est dans la whitelist ou ressemble à un pattern valide
+    const isAllowed = ALLOWED_CONDITION_LABELS.has(labelLower) ||
+                      /^[a-z\s]{3,25}$/.test(labelLower);
+
+    if (!isAllowed) {
+      if (debug) console.log('[telegram] Condition label non autorisé:', label);
+      return null;
+    }
+
+    // Vérifier les caractères dangereux dans la valeur (XSS, scripts)
+    if (/<script|javascript:|onclick|onerror|onload/i.test(value)) {
+      if (debug) console.log('[telegram] Valeur suspecte filtrée:', value);
+      return null;
+    }
+
+    // Nettoyer et tronquer
+    return {
+      label: label.trim().slice(0, 50),
+      value: value.trim().slice(0, 100)
+    };
+  }
+
   function extractConditions(text) {
     const conditions = [];
 
@@ -247,13 +315,21 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
           !/^https?:/i.test(value) &&
           !/^https?:/i.test(label) &&
           !/^code$/i.test(label)) {
-        if (debug) console.log('[telegram] Found condition:', label, ':', value);
-        conditions.push({ label, value });
+
+        // Valider et nettoyer la condition
+        const sanitized = sanitizeCondition(label, value);
+        if (sanitized) {
+          if (debug) console.log('[telegram] Found condition:', sanitized.label, ':', sanitized.value);
+          conditions.push(sanitized);
+        }
       }
     }
 
-    if (debug) console.log('[telegram] Total conditions extracted:', conditions.length);
-    return conditions;
+    // Limiter le nombre de conditions à 10 max
+    const limitedConditions = conditions.slice(0, 10);
+
+    if (debug) console.log('[telegram] Total conditions extracted:', limitedConditions.length);
+    return limitedConditions;
   }
 
   /**

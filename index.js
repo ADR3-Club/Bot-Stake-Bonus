@@ -10,6 +10,38 @@ const {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Event Listeners Discord - Gestion des déconnexions et erreurs
+// ═══════════════════════════════════════════════════════════════════════════
+
+client.on(Events.ShardDisconnect, (event, shardId) => {
+  console.warn(`[discord] ⚠ Shard ${shardId} déconnecté (code: ${event?.code || 'unknown'})`);
+});
+
+client.on(Events.ShardReconnecting, (shardId) => {
+  console.log(`[discord] ⟳ Shard ${shardId} reconnexion en cours...`);
+});
+
+client.on(Events.ShardResume, (shardId, replayedEvents) => {
+  console.log(`[discord] ✓ Shard ${shardId} reconnecté (${replayedEvents} events rejoués)`);
+});
+
+client.on(Events.ShardError, (error, shardId) => {
+  console.error(`[discord] ✗ Erreur shard ${shardId}:`, error.message);
+});
+
+client.on(Events.Error, (error) => {
+  console.error('[discord] ✗ Erreur client:', error.message);
+});
+
+client.on(Events.Warn, (message) => {
+  console.warn('[discord] ⚠ Warning:', message);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Démarrage du bot
+// ═══════════════════════════════════════════════════════════════════════════
+
 // ⬇️ Utilise 'clientReady' via Events.ClientReady (compatible v14 et prêt pour v15)
 client.once(Events.ClientReady, async (c) => {
   console.log(`🚀 Connecté en tant que ${c.user.tag}`);

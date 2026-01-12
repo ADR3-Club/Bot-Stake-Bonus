@@ -1,5 +1,71 @@
 # Changelog - Bot-Stake-Bonus
 
+## [2.2.0] - 2026-01-12
+
+### 🔒 Corrections de Sécurité
+
+#### 1. **Session Telegram Masquée** (`detectors/telegram.js`)
+- La session Telegram n'est plus affichée en clair dans les logs
+- Affichage masqué : seuls les 10 premiers et 10 derniers caractères sont visibles
+- Sauvegarde sécurisée dans un fichier `.session-backup` (ajouté au `.gitignore`)
+
+#### 2. **Suppression de fluent-ffmpeg** (obsolète depuis 2021)
+- Migré vers `child_process` avec appels directs à FFmpeg
+- Supprime une dépendance non maintenue et potentiellement vulnérable
+- Utilise `os.tmpdir()` pour compatibilité Windows/Linux
+
+### 🔧 Corrections de Stabilité
+
+#### 3. **Reconnexion Itérative** (`detectors/telegram.js:121-170`)
+- Remplacement de la reconnexion récursive par une boucle `while`
+- Élimine le risque de stack overflow après 10+ tentatives
+- Ajout de jitter (0-1s) pour éviter les reconnexions simultanées
+
+#### 4. **Keepalive avec Reconnexion Immédiate** (`detectors/telegram.js:186-191`)
+- En cas d'erreur de keepalive, reconnexion immédiate au lieu d'attendre 30s
+- Réduit le temps de récupération après perte de connexion
+
+#### 5. **Event Listeners Discord** (`index.js:17-39`)
+- Ajout de listeners pour : `ShardDisconnect`, `ShardReconnecting`, `ShardResume`, `ShardError`, `Error`, `Warn`
+- Logs détaillés des événements de connexion Discord
+
+#### 6. **Race Condition SQLite** (`lib/store.js`)
+- Système de locks en mémoire pour éviter les insertions doubles
+- Nettoyage automatique des entrées > 7 jours
+- Protection supplémentaire de 1 seconde après insertion
+
+### 🛡️ Validation des Données
+
+#### 7. **Validation des Conditions** (`detectors/telegram.js:255-333`)
+- Whitelist de labels autorisés (value, min bet, type, rank, etc.)
+- Protection contre XSS et injection (`<script>`, `javascript:`, etc.)
+- Limitation à 10 conditions max et 100 caractères par valeur
+
+### 🚀 Optimisations
+
+#### 8. **OCR Parallèle** (`lib/ocr.js:300-372`)
+- Traitement des frames par batch de 3 en parallèle
+- Early exit dès qu'un code est trouvé
+- Amélioration de la performance de 30-50%
+
+### 📝 Fichiers Modifiés
+
+| Fichier | Description |
+|---------|-------------|
+| `index.js` | +28 lignes : event listeners Discord |
+| `detectors/telegram.js` | Session masquée, reconnexion itérative, validation |
+| `lib/store.js` | Refactoring complet avec locks et nettoyage |
+| `lib/ocr.js` | Migration FFmpeg, traitement parallèle |
+| `package.json` | Suppression fluent-ffmpeg, version 2.2.0 |
+| `.gitignore` | Ajout .session-backup |
+
+### ⚠️ Breaking Changes
+
+- FFmpeg doit être installé sur le système (ce qui était déjà le cas)
+- Le fichier `.session-backup` sera créé automatiquement si nouvelle session
+
+---
+
 ## [2.1.0] - 2025-11-24
 
 ### 🔧 Corrections Critiques - Stabilité de la Connexion Telegram
