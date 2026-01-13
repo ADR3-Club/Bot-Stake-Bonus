@@ -23,6 +23,12 @@ try {
 const NewMessage = TEvents.NewMessage;
 const EditedCtor = TEvents.MessageEdited || TEvents.EditedMessage || null;
 
+// Vérifier que NewMessage est bien importé
+if (!NewMessage) {
+  console.error('[telegram] ✗ ERREUR CRITIQUE: NewMessage n\'a pas pu être importé depuis GramJS');
+  console.error('[telegram] ✗ Les messages ne seront PAS détectés. Vérifiez votre installation de "telegram" (npm install)');
+}
+
 export default async function useTelegramDetector(client, channelId, pingRoleId, cfg) {
   const apiId = Number(cfg.apiId);
   const apiHash = cfg.apiHash;
@@ -185,9 +191,10 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
         }
       } catch (error) {
         console.error('[telegram] ⚠ Keepalive error:', error.message);
-        // Reconnexion immédiate en cas d'erreur de keepalive
-        console.warn('[telegram] ⚠ Déclenchement de la reconnexion suite à erreur keepalive');
-        await reconnect();
+        // Ne pas reconnecter immédiatement pour éviter les reconnexions en cascade
+        // La prochaine itération (30s) vérifiera à nouveau la connexion
+        // Si le problème persiste, la reconnexion sera déclenchée automatiquement
+        // await reconnect();
       }
     }, KEEPALIVE_INTERVAL);
 
@@ -799,6 +806,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
           // Ne pas reconnecter pour une erreur de handler
         }
       }, new NewMessage({}));
+      console.log('[telegram] ✓ NewMessage handler enregistré');
 
       if (EditedCtor) {
         tg.addEventHandler(async (ev) => {
@@ -808,6 +816,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
             console.error('[telegram] ✗ Handler EDIT error:', error.message);
           }
         }, new EditedCtor({}));
+        console.log('[telegram] ✓ EditedMessage handler enregistré');
       } else {
         console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
       }

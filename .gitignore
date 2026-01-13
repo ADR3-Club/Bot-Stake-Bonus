@@ -20,6 +20,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -27,3 +28,4 @@ Thumbs.db
 # Temporary files
 /tmp/
 *.tmp
+tmpclaude-*

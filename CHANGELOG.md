@@ -1,5 +1,30 @@
 # Changelog - Bot-Stake-Bonus
 
+## [2.2.1] - 2026-01-13
+
+### 🔧 Corrections de Stabilité
+
+#### 1. **Keepalive Non-Agressif** (`detectors/telegram.js:186-192`)
+- Désactivation de la reconnexion immédiate lors d'erreurs de keepalive
+- Évite les reconnexions en cascade qui peuvent supprimer les event handlers
+- Le keepalive attend maintenant 30 secondes avant de vérifier à nouveau
+- Améliore la stabilité sur connexions instables
+
+#### 2. **Logging Amélioré des Event Handlers** (`detectors/telegram.js:802,812`)
+- Ajout de logs de confirmation après l'enregistrement de chaque handler
+- Facilite le diagnostic des problèmes de détection de messages
+- Logs: `[telegram] ✓ NewMessage handler enregistré` et `[telegram] ✓ EditedMessage handler enregistré`
+
+#### 3. **Vérification de l'Import NewMessage** (`detectors/telegram.js:26-30`)
+- Détection des échecs d'import de `NewMessage` depuis GramJS
+- Affiche une erreur critique si l'import échoue
+- Permet de diagnostiquer rapidement les problèmes d'installation
+
+### 🎯 Objectif
+Cette mise à jour résout les problèmes de détection de messages intermittents qui pouvaient survenir lors de reconnexions réseau. Le changement principal est de rendre le keepalive moins agressif pour éviter qu'il ne déclenche des reconnexions qui suppriment les event handlers en cours d'utilisation.
+
+---
+
 ## [2.2.0] - 2026-01-12
 
 ### 🔒 Corrections de Sécurité
