@@ -29,3 +29,4 @@ Thumbs.db
 /tmp/
 *.tmp
 tmpclaude-*
+.claude/settings.local.json
