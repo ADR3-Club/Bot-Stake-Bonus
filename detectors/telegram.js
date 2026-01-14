@@ -4,6 +4,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import input from 'input';
 import { alreadySeen } from '../lib/store.js';
 import { buildPayloadFromUrl, publishDiscord } from '../lib/publisher.js';
+import { retryPublish } from '../lib/queue.js';
 import { extractCodeFromUrl, inferBonusRecord } from '../lib/parser.js';
 import { DateTime } from 'luxon';
 import { initOCR, extractCodeFromImage, extractCodeFromVideo, cleanupFile, isAlreadyProcessed, markAsProcessed } from '../lib/ocr.js';
@@ -60,7 +61,10 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
   let reconnectAttempts = 0;
   let keepaliveInterval = null;
   let isReconnecting = false;
+  let currentHandlers = []; // Track active handlers for zero-downtime replacement
+  let keepaliveFailures = 0; // Track consecutive keepalive failures
   const MAX_RECONNECT_ATTEMPTS = 10;
+  const MAX_KEEPALIVE_FAILURES = 2; // Reconnect after 2 consecutive failures (60s)
   const KEEPALIVE_INTERVAL = 30000; // 30 secondes
 
   // Fonction de connexion avec gestion d'erreur
@@ -180,23 +184,30 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
   // Fonction keepalive pour maintenir la connexion active
   function startKeepalive() {
     stopKeepalive(); // Arrêter l'ancien si existant
+    keepaliveFailures = 0; // Reset counter
 
     keepaliveInterval = setInterval(async () => {
       try {
         if (tg && tg.connected) {
           // Ping simple avec getMe()
           await tg.getMe();
+          keepaliveFailures = 0; // Reset on success
           if (debug) console.log('[telegram] ⟳ Keepalive ping OK');
         } else {
           console.warn('[telegram] ⚠ Connexion perdue détectée par keepalive');
+          keepaliveFailures = MAX_KEEPALIVE_FAILURES; // Trigger immediate reconnect
           await reconnect();
         }
       } catch (error) {
-        console.error('[telegram] ⚠ Keepalive error:', error.message);
-        // Ne pas reconnecter immédiatement pour éviter les reconnexions en cascade
-        // La prochaine itération (30s) vérifiera à nouveau la connexion
-        // Si le problème persiste, la reconnexion sera déclenchée automatiquement
-        // await reconnect();
+        keepaliveFailures++;
+        console.error(`[telegram] ⚠ Keepalive error (${keepaliveFailures}/${MAX_KEEPALIVE_FAILURES}):`, error.message);
+
+        // Reconnect only after multiple consecutive failures
+        // This prevents cascading reconnections from transient errors
+        if (keepaliveFailures >= MAX_KEEPALIVE_FAILURES) {
+          console.warn('[telegram] ⚠ Échecs multiples keepalive, reconnexion...');
+          await reconnect();
+        }
       }
     }, KEEPALIVE_INTERVAL);
 
@@ -456,8 +467,10 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     const now = Date.now();
     for (const [key, value] of channelCache.entries()) {
       if (now - value.timestamp > CACHE_TTL) {
+        // Warn before expiring - helps identify if codes are arriving later than expected
+        const ageMinutes = Math.round((now - value.timestamp) / 60000);
+        console.warn(`[telegram] ⚠ Cache expiré pour ${key} (âge: ${ageMinutes}min, avait ${value.conditions.length} conditions)`);
         channelCache.delete(key);
-        if (debug) console.log('[telegram] Cache expired for', key);
       }
     }
   }
@@ -594,21 +607,20 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
         if (debug) console.log('[telegram] RainsTEAM: code found with cached conditions:', code);
 
-        // Construire URL et publier
-        try {
-          const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(code)}&currency=usdc&modal=redeemBonus`;
-          const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions: cached.conditions, code: code });
+        // Construire URL et publier avec retry
+        const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(code)}&currency=usdc&modal=redeemBonus`;
+        const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions: cached.conditions, code: code });
+
+        const success = await retryPublish(async () => {
           const channel = await client.channels.fetch(channelId);
           await publishDiscord(channel, payload, { pingSpoiler: true });
-          console.log('[telegram] RainsTEAM bonus publié ->', code);
+        }, 'RainsTEAM');
 
-          // Nettoyer le cache après publication
-          channelCache.delete(chatIdStr);
-          return;
-        } catch (e) {
-          console.error('[telegram] RainsTEAM publish error:', e.message);
-          return;
+        if (success) {
+          console.log('[telegram] RainsTEAM bonus publié ->', code);
         }
+        channelCache.delete(chatIdStr);
+        return;
       }
       // Si pas de cache, on continue vers le système classique (peut-être un code dans un spoiler)
     }
@@ -636,7 +648,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
             if (debug) console.log('[telegram] VIP Notices: detected type=', rec.kind, 'title=', title);
 
-            // Construire l'URL et publier (format simple pour VIP Notices)
+            // Construire l'URL et publier avec retry (format simple pour VIP Notices)
             const url = `https://stake.com?bonus=${encodeURIComponent(code)}`;
             const payload = buildPayloadFromUrl(url, {
               rankMin: 'Bronze',
@@ -646,9 +658,14 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
               useSimpleFormat: true
             });
 
-            const channel = await client.channels.fetch(channelId);
-            await publishDiscord(channel, payload, { pingSpoiler: true });
-            console.log('[telegram] VIP Notices bonus publié ->', rec.kind, code);
+            const success = await retryPublish(async () => {
+              const channel = await client.channels.fetch(channelId);
+              await publishDiscord(channel, payload, { pingSpoiler: true });
+            }, 'VIP Notices');
+
+            if (success) {
+              console.log('[telegram] VIP Notices bonus publié ->', rec.kind, code);
+            }
             return;
           } else {
             if (debug) console.log('[telegram] VIP Notices: bonus type not recognized');
@@ -670,15 +687,17 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
       if (debug) console.log('[telegram] code trouvé:', bonus.code);
 
-      // Publication Discord
-      try {
-        const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(bonus.code)}&currency=usdc&modal=redeemBonus`;
-        const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions: bonus.conditions, code: bonus.code });
+      // Publication Discord avec retry
+      const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(bonus.code)}&currency=usdc&modal=redeemBonus`;
+      const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions: bonus.conditions, code: bonus.code });
+
+      const success = await retryPublish(async () => {
         const channel = await client.channels.fetch(channelId);
         await publishDiscord(channel, payload, { pingSpoiler: true });
+      }, 'Spoiler');
+
+      if (success) {
         console.log('[telegram] Spoiler bonus publié ->', bonus.code);
-      } catch (e) {
-        console.error('[telegram] parse/publish error:', e.message);
       }
       return; // Bonus traité, on s'arrête ici
     }
@@ -720,12 +739,18 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
             // Extraire les conditions depuis le caption
             const conditions = extractConditions(caption);
 
-            // Publier sur Discord
+            // Publier sur Discord avec retry
             const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(result.code)}&currency=usdc&modal=redeemBonus`;
             const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions, code: result.code });
-            const channel = await client.channels.fetch(channelId);
-            await publishDiscord(channel, payload, { pingSpoiler: true });
-            console.log('[telegram] OCR photo bonus publié ->', result.code, `(confidence: ${result.confidence.toFixed(1)}%)`);
+
+            const success = await retryPublish(async () => {
+              const channel = await client.channels.fetch(channelId);
+              await publishDiscord(channel, payload, { pingSpoiler: true });
+            }, 'OCR Photo');
+
+            if (success) {
+              console.log('[telegram] OCR photo bonus publié ->', result.code, `(confidence: ${result.confidence.toFixed(1)}%)`);
+            }
             return;
           } else {
             if (debug) console.log('[telegram] OCR: no code found in photo');
@@ -768,12 +793,18 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
             // Extraire les conditions depuis le caption
             const conditions = extractConditions(caption);
 
-            // Publier sur Discord
+            // Publier sur Discord avec retry
             const url = `https://stake.com/settings/offers?type=drop&code=${encodeURIComponent(result.code)}&currency=usdc&modal=redeemBonus`;
             const payload = buildPayloadFromUrl(url, { rankMin: 'Bronze', conditions, code: result.code });
-            const channel = await client.channels.fetch(channelId);
-            await publishDiscord(channel, payload, { pingSpoiler: true });
-            console.log('[telegram] OCR video bonus publié ->', result.code, `(confidence: ${result.confidence.toFixed(1)}%, ${result.framesProcessed} frames)`);
+
+            const success = await retryPublish(async () => {
+              const channel = await client.channels.fetch(channelId);
+              await publishDiscord(channel, payload, { pingSpoiler: true });
+            }, 'OCR Video');
+
+            if (success) {
+              console.log('[telegram] OCR video bonus publié ->', result.code, `(confidence: ${result.confidence.toFixed(1)}%, ${result.framesProcessed} frames)`);
+            }
             return;
           } else {
             if (debug) console.log('[telegram] OCR: no code found in video (processed', result.framesProcessed, 'frames)');
@@ -788,7 +819,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     if (debug) console.log('[telegram] Message ignored (no bonus detected)');
   };
 
-  // -------- Fonction de configuration des event handlers
+  // -------- Fonction de configuration des event handlers (zero-downtime replacement)
   function setupEventHandlers() {
     if (!tg) {
       console.error('[telegram] ✗ Impossible de configurer les event handlers: client non initialisé');
@@ -796,31 +827,52 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
 
     try {
-      // Supprimer les anciens handlers (au cas où)
-      tg.removeEventHandler();
-
-      // Ajouter les nouveaux handlers avec gestion d'erreur améliorée
-      tg.addEventHandler(async (ev) => {
+      // Create new handlers FIRST (before removing old ones)
+      const newMessageHandler = async (ev) => {
         try {
           await handler(ev, 'NEW');
         } catch (error) {
           console.error('[telegram] ✗ Handler NEW error:', error.message);
-          // Ne pas reconnecter pour une erreur de handler
         }
-      }, new NewMessage({}));
+      };
+
+      const editedMessageHandler = EditedCtor ? async (ev) => {
+        try {
+          await handler(ev, 'EDIT');
+        } catch (error) {
+          console.error('[telegram] ✗ Handler EDIT error:', error.message);
+        }
+      } : null;
+
+      // Add new handlers BEFORE removing old ones (zero-downtime)
+      tg.addEventHandler(newMessageHandler, new NewMessage({}));
       console.log('[telegram] ✓ NewMessage handler enregistré');
 
-      if (EditedCtor) {
-        tg.addEventHandler(async (ev) => {
-          try {
-            await handler(ev, 'EDIT');
-          } catch (error) {
-            console.error('[telegram] ✗ Handler EDIT error:', error.message);
-          }
-        }, new EditedCtor({}));
+      if (editedMessageHandler) {
+        tg.addEventHandler(editedMessageHandler, new EditedCtor({}));
         console.log('[telegram] ✓ EditedMessage handler enregistré');
       } else {
         console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
+      }
+
+      // NOW remove old handlers (if any) - after new ones are active
+      if (currentHandlers.length > 0) {
+        for (const oldHandler of currentHandlers) {
+          try {
+            tg.removeEventHandler(oldHandler.callback, oldHandler.event);
+          } catch (e) {
+            // Ignore errors from removing old handlers
+          }
+        }
+        if (debug) console.log('[telegram] ✓ Anciens handlers supprimés');
+      }
+
+      // Update tracked handlers
+      currentHandlers = [
+        { callback: newMessageHandler, event: new NewMessage({}) }
+      ];
+      if (editedMessageHandler) {
+        currentHandlers.push({ callback: editedMessageHandler, event: new EditedCtor({}) });
       }
 
       if (debug) console.log('[telegram] ✓ Event handlers configurés');
