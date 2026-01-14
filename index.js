@@ -8,7 +8,17 @@ const {
   TG_API_ID, TG_API_HASH, TG_SESSION, TG_CHANNELS
 } = process.env;
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// Circuit breaker Discord - prévient les boucles de reconnexion infinies
+let discordReconnectCount = 0;
+const DISCORD_MAX_RECONNECTS = 10;
+const DISCORD_RECONNECT_WINDOW = 60000; // 1 minute
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages  // Requis pour envoyer des messages
+  ]
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Event Listeners Discord - Gestion des déconnexions et erreurs
@@ -19,11 +29,20 @@ client.on(Events.ShardDisconnect, (event, shardId) => {
 });
 
 client.on(Events.ShardReconnecting, (shardId) => {
-  console.log(`[discord] ⟳ Shard ${shardId} reconnexion en cours...`);
+  discordReconnectCount++;
+  console.log(`[discord] ⟳ Shard ${shardId} reconnexion en cours (${discordReconnectCount}/${DISCORD_MAX_RECONNECTS})...`);
+
+  if (discordReconnectCount >= DISCORD_MAX_RECONNECTS) {
+    console.error('[discord] ✗ ERREUR CRITIQUE: Nombre maximum de reconnexions atteint');
+    console.error('[discord] Vérifiez DISCORD_TOKEN et la connexion réseau');
+    process.exit(1);
+  }
 });
 
 client.on(Events.ShardResume, (shardId, replayedEvents) => {
   console.log(`[discord] ✓ Shard ${shardId} reconnecté (${replayedEvents} events rejoués)`);
+  // Reset counter on successful reconnection
+  discordReconnectCount = Math.max(0, discordReconnectCount - 1);
 });
 
 client.on(Events.ShardError, (error, shardId) => {
@@ -37,6 +56,13 @@ client.on(Events.Error, (error) => {
 client.on(Events.Warn, (message) => {
   console.warn('[discord] ⚠ Warning:', message);
 });
+
+// Reset counter every minute (prevents permanent shutdown from transient issues)
+setInterval(() => {
+  if (discordReconnectCount > 0) {
+    discordReconnectCount = Math.max(0, discordReconnectCount - 2);
+  }
+}, DISCORD_RECONNECT_WINDOW);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Démarrage du bot
@@ -56,6 +82,24 @@ client.once(Events.ClientReady, async (c) => {
   }
 
   await initStore();
+
+  // Valider la connexion Discord et les permissions
+  try {
+    const targetChannel = await client.channels.fetch(CHANNEL_ID);
+    if (!targetChannel) {
+      console.error('[discord] ✗ ERREUR CRITIQUE: Canal introuvable (ID:', CHANNEL_ID, ')');
+      process.exit(1);
+    }
+    if (!targetChannel.isTextBased()) {
+      console.error('[discord] ✗ ERREUR CRITIQUE: Le canal n\'est pas un canal textuel');
+      process.exit(1);
+    }
+    console.log(`[discord] ✓ Canal validé: #${targetChannel.name}`);
+  } catch (e) {
+    console.error('[discord] ✗ ERREUR CRITIQUE: Impossible d\'accéder au canal:', e.message);
+    console.error('[discord] Vérifiez CHANNEL_ID et les permissions du bot');
+    process.exit(1);
+  }
 
   if (TG_API_ID && TG_API_HASH) {
     await useTelegramDetector(client, CHANNEL_ID, PING_ROLE_ID, {

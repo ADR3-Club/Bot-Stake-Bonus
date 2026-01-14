@@ -27,6 +27,8 @@ const EditedCtor = TEvents.MessageEdited || TEvents.EditedMessage || null;
 if (!NewMessage) {
   console.error('[telegram] ✗ ERREUR CRITIQUE: NewMessage n\'a pas pu être importé depuis GramJS');
   console.error('[telegram] ✗ Les messages ne seront PAS détectés. Vérifiez votre installation de "telegram" (npm install)');
+  console.error('[telegram] ✗ Commande de réparation: npm install telegram@latest');
+  process.exit(1); // Exit immediately - bot is non-functional
 }
 
 export default async function useTelegramDetector(client, channelId, pingRoleId, cfg) {
