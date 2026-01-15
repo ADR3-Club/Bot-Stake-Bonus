@@ -61,7 +61,6 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
   let reconnectAttempts = 0;
   let keepaliveInterval = null;
   let isReconnecting = false;
-  let currentHandlers = []; // Track active handlers for zero-downtime replacement
   let keepaliveFailures = 0; // Track consecutive keepalive failures
   const MAX_RECONNECT_ATTEMPTS = 10;
   const MAX_KEEPALIVE_FAILURES = 2; // Reconnect after 2 consecutive failures (60s)
@@ -819,7 +818,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     if (debug) console.log('[telegram] Message ignored (no bonus detected)');
   };
 
-  // -------- Fonction de configuration des event handlers (zero-downtime replacement)
+  // -------- Fonction de configuration des event handlers
   function setupEventHandlers() {
     if (!tg) {
       console.error('[telegram] ✗ Impossible de configurer les event handlers: client non initialisé');
@@ -827,55 +826,34 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
 
     try {
-      // Create new handlers FIRST (before removing old ones)
-      const newMessageHandler = async (ev) => {
+      // Supprimer TOUS les anciens handlers d'abord (méthode simple et fiable)
+      tg.removeEventHandler();
+
+      // Ajouter le handler pour les nouveaux messages
+      tg.addEventHandler(async (ev) => {
         try {
           await handler(ev, 'NEW');
         } catch (error) {
           console.error('[telegram] ✗ Handler NEW error:', error.message);
         }
-      };
-
-      const editedMessageHandler = EditedCtor ? async (ev) => {
-        try {
-          await handler(ev, 'EDIT');
-        } catch (error) {
-          console.error('[telegram] ✗ Handler EDIT error:', error.message);
-        }
-      } : null;
-
-      // Add new handlers BEFORE removing old ones (zero-downtime)
-      tg.addEventHandler(newMessageHandler, new NewMessage({}));
+      }, new NewMessage({}));
       console.log('[telegram] ✓ NewMessage handler enregistré');
 
-      if (editedMessageHandler) {
-        tg.addEventHandler(editedMessageHandler, new EditedCtor({}));
+      // Ajouter le handler pour les messages édités (si disponible)
+      if (EditedCtor) {
+        tg.addEventHandler(async (ev) => {
+          try {
+            await handler(ev, 'EDIT');
+          } catch (error) {
+            console.error('[telegram] ✗ Handler EDIT error:', error.message);
+          }
+        }, new EditedCtor({}));
         console.log('[telegram] ✓ EditedMessage handler enregistré');
       } else {
         console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
       }
 
-      // NOW remove old handlers (if any) - after new ones are active
-      if (currentHandlers.length > 0) {
-        for (const oldHandler of currentHandlers) {
-          try {
-            tg.removeEventHandler(oldHandler.callback, oldHandler.event);
-          } catch (e) {
-            // Ignore errors from removing old handlers
-          }
-        }
-        if (debug) console.log('[telegram] ✓ Anciens handlers supprimés');
-      }
-
-      // Update tracked handlers
-      currentHandlers = [
-        { callback: newMessageHandler, event: new NewMessage({}) }
-      ];
-      if (editedMessageHandler) {
-        currentHandlers.push({ callback: editedMessageHandler, event: new EditedCtor({}) });
-      }
-
-      if (debug) console.log('[telegram] ✓ Event handlers configurés');
+      console.log('[telegram] ✓ Event handlers configurés');
     } catch (error) {
       console.error('[telegram] ✗ Erreur lors de la configuration des handlers:', error.message);
     }

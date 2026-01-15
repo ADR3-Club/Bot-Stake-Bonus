@@ -1,5 +1,25 @@
 # Changelog - Bot-Stake-Bonus
 
+## [2.3.1] - 2026-01-15
+
+### 🐛 Correction Critique - Détection Messages
+
+#### Problème
+Le système "zero-downtime" pour les event handlers introduit en v2.3.0 ne fonctionnait pas correctement avec GramJS. La méthode `tg.removeEventHandler(callback, event)` ne supprime pas les handlers individuellement comme attendu.
+
+#### Solution
+Retour à la méthode simple et fiable de v2.1.0 :
+```javascript
+tg.removeEventHandler(); // Supprime TOUS les handlers
+tg.addEventHandler(handler, new NewMessage({})); // Ajoute les nouveaux
+```
+
+#### Fichiers modifiés
+- `detectors/telegram.js` : Simplification de `setupEventHandlers()`
+- `package.json` : Version 2.3.1
+
+---
+
 ## [2.2.1] - 2026-01-13
 
 ### 🔧 Corrections de Stabilité
