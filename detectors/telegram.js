@@ -558,11 +558,16 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
     // Filtre pour n'écouter que les canaux configurés
     if (handles.size || ids.size) {
-      const ok = (usernameLower && handles.has(usernameLower)) || (chatIdStr && ids.has(chatIdStr));
+      // Normaliser chatIdStr de la même façon que les IDs configurés (retirer préfixe -100)
+      let normalizedChatId = chatIdStr;
+      if (normalizedChatId && normalizedChatId.startsWith('-100')) {
+        normalizedChatId = normalizedChatId.slice(4);
+      }
+      const ok = (usernameLower && handles.has(usernameLower)) || (normalizedChatId && ids.has(normalizedChatId));
       if (debug) {
         console.log('[telegram] Channel filter check: ok=', ok);
         console.log('[telegram]   username match:', usernameLower && handles.has(usernameLower));
-        console.log('[telegram]   id match:', chatIdStr && ids.has(chatIdStr));
+        console.log('[telegram]   id match:', normalizedChatId && ids.has(normalizedChatId), '(normalized:', normalizedChatId, ')');
       }
       if (!ok) return;
     }
