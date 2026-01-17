@@ -831,54 +831,69 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     }
 
     try {
-      // Supprimer TOUS les anciens handlers d'abord (méthode simple et fiable)
+      // Supprimer TOUS les anciens handlers d'abord
       tg.removeEventHandler();
 
-      // Construire la liste des chats à écouter explicitement
-      // Cela force GramJS à recevoir les messages même des canaux où on est simple abonné
-      // Inclure les IDs (en BigInt) ET les usernames (en string)
-      const chatsToWatch = [
-        ...[...ids].map(id => BigInt(id)),
-        ...[...handles]  // usernames comme strings
-      ];
+      console.log('[telegram] Registering RAW update handler (captures all channel messages)');
 
-      // Construire le filtre : si des chats sont configurés, les spécifier explicitement
-      const filter = chatsToWatch.length > 0 ? { chats: chatsToWatch } : {};
-
-      if (chatsToWatch.length > 0) {
-        const idsStr = [...ids].join(', ');
-        const handlesStr = [...handles].join(', ');
-        console.log('[telegram] Registering handler for specific chats:');
-        if (ids.size > 0) console.log('[telegram]   IDs:', idsStr);
-        if (handles.size > 0) console.log('[telegram]   Handles:', handlesStr);
-      } else {
-        console.log('[telegram] Registering handler for ALL chats (no filter)');
-      }
-
-      // Ajouter le handler pour les nouveaux messages avec filtre explicite
-      tg.addEventHandler(async (ev) => {
+      // Utiliser un RAW update handler pour capturer TOUS les updates
+      // Cela contourne les limitations de NewMessage pour les canaux où on est simple abonné
+      tg.addEventHandler(async (update) => {
         try {
-          await handler(ev, 'NEW');
-        } catch (error) {
-          console.error('[telegram] ✗ Handler NEW error:', error.message);
-        }
-      }, new NewMessage(filter));
-      console.log('[telegram] ✓ NewMessage handler enregistré');
+          // Filtrer les types d'updates qui nous intéressent
+          const updateType = update.className || update._;
 
-      // Ajouter le handler pour les messages édités (si disponible)
-      if (EditedCtor) {
-        tg.addEventHandler(async (ev) => {
-          try {
-            await handler(ev, 'EDIT');
-          } catch (error) {
-            console.error('[telegram] ✗ Handler EDIT error:', error.message);
+          if (debug) {
+            console.log('[telegram] RAW update received:', updateType);
           }
-        }, new EditedCtor(filter));
-        console.log('[telegram] ✓ EditedMessage handler enregistré');
-      } else {
-        console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
-      }
 
+          // UpdateNewChannelMessage = nouveaux messages dans les canaux
+          // UpdateNewMessage = nouveaux messages dans les chats privés/groupes
+          if (updateType === 'UpdateNewChannelMessage' || updateType === 'UpdateNewMessage') {
+            const message = update.message;
+            if (!message) return;
+
+            // Créer un objet event-like pour réutiliser le handler existant
+            const eventLike = {
+              message: message,
+              getChat: async () => {
+                try {
+                  return await tg.getEntity(message.peerId);
+                } catch (e) {
+                  if (debug) console.log('[telegram] getEntity error:', e.message);
+                  return null;
+                }
+              }
+            };
+
+            await handler(eventLike, 'RAW');
+          }
+
+          // UpdateEditChannelMessage = messages édités dans les canaux
+          if (updateType === 'UpdateEditChannelMessage' || updateType === 'UpdateEditMessage') {
+            const message = update.message;
+            if (!message) return;
+
+            const eventLike = {
+              message: message,
+              getChat: async () => {
+                try {
+                  return await tg.getEntity(message.peerId);
+                } catch (e) {
+                  if (debug) console.log('[telegram] getEntity error:', e.message);
+                  return null;
+                }
+              }
+            };
+
+            await handler(eventLike, 'EDIT');
+          }
+        } catch (error) {
+          console.error('[telegram] ✗ RAW handler error:', error.message);
+        }
+      });
+
+      console.log('[telegram] ✓ RAW update handler enregistré');
       console.log('[telegram] ✓ Event handlers configurés');
     } catch (error) {
       console.error('[telegram] ✗ Erreur lors de la configuration des handlers:', error.message);
