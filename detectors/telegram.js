@@ -570,7 +570,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
   // -------- Cache système pour RainsTEAM (messages séparés: conditions puis code)
   const channelCache = new Map(); // { chatId: { conditions: [...], timestamp: number } }
-  const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  const CACHE_TTL = 15 * 60 * 1000; // 15 minutes (augmenté car les codes arrivent parfois tard)
 
   function cleanExpiredCache() {
     const now = Date.now();
