@@ -841,15 +841,24 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
       tg.addEventHandler(async (update) => {
         try {
           // Filtrer les types d'updates qui nous intéressent
-          const updateType = update.className || update._;
+          // GramJS peut utiliser différentes propriétés selon la version
+          const updateType = update.className || update._ || update.constructor?.name;
 
           if (debug) {
             console.log('[telegram] RAW update received:', updateType);
+            console.log('[telegram] RAW update keys:', Object.keys(update).slice(0, 10).join(', '));
+            if (update.message) {
+              console.log('[telegram] RAW update has message! peerId:', JSON.stringify(update.message.peerId));
+            }
           }
 
-          // UpdateNewChannelMessage = nouveaux messages dans les canaux
-          // UpdateNewMessage = nouveaux messages dans les chats privés/groupes
-          if (updateType === 'UpdateNewChannelMessage' || updateType === 'UpdateNewMessage') {
+          // Méthode alternative : vérifier si l'update contient un message
+          // Cela fonctionne même si le type exact est inconnu
+          const hasNewMessage = updateType?.includes('NewChannelMessage') ||
+                               updateType?.includes('NewMessage') ||
+                               (update.message && !update.message.editDate);
+
+          if (hasNewMessage && update.message) {
             const message = update.message;
             if (!message) return;
 
@@ -870,7 +879,11 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
           }
 
           // UpdateEditChannelMessage = messages édités dans les canaux
-          if (updateType === 'UpdateEditChannelMessage' || updateType === 'UpdateEditMessage') {
+          const hasEditMessage = updateType?.includes('EditChannelMessage') ||
+                                updateType?.includes('EditMessage') ||
+                                (update.message && update.message.editDate);
+
+          if (hasEditMessage && update.message && !hasNewMessage) {
             const message = update.message;
             if (!message) return;
 
