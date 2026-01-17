@@ -263,6 +263,9 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
       ...[...ids].map(id => `-100${id}`)  // format -100+ID pour les canaux
     ];
 
+    // Set pour tracker les IDs de canaux déjà pollés dans ce cycle (évite le double-traitement)
+    const polledChannelIds = new Set();
+
     for (const channelRef of channelsToCheck) {
       try {
         // Récupérer les 5 derniers messages du canal
@@ -272,17 +275,31 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
         if (!messages || messages.length === 0) continue;
 
+        // Extraire l'ID réel du canal depuis le premier message (pour éviter les doublons)
+        const firstMsg = messages[0];
+        const realChannelId = firstMsg?.peerId?.channelId?.value?.toString() ||
+                              firstMsg?.peerId?.channelId?.toString() ||
+                              channelRef;
+
+        // Skip si ce canal a déjà été pollé via un autre identifiant (username vs ID)
+        if (polledChannelIds.has(realChannelId)) {
+          if (debug) console.log(`[telegram] POLL: Skipping ${channelRef} (already polled as ${realChannelId})`);
+          continue;
+        }
+        polledChannelIds.add(realChannelId);
+
         // Trier par ID décroissant (plus récent en premier)
         messages.sort((a, b) => b.id - a.id);
 
-        const lastKnownId = lastMessageIds.get(channelRef) || 0;
+        // Utiliser l'ID réel du canal comme clé (pas le channelRef) pour éviter les doublons
+        const lastKnownId = lastMessageIds.get(realChannelId) || 0;
 
         // Traiter les nouveaux messages (ceux avec un ID supérieur au dernier connu)
         for (const message of messages) {
           if (message.id <= lastKnownId) continue;
 
           if (debug) {
-            console.log(`[telegram] POLL: New message in ${channelRef}, msgId=${message.id}`);
+            console.log(`[telegram] POLL: New message in ${channelRef} (channelId=${realChannelId}), msgId=${message.id}`);
           }
 
           // Créer un event-like pour réutiliser le handler existant
@@ -306,9 +323,9 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
           }
         }
 
-        // Mettre à jour le dernier ID connu
+        // Mettre à jour le dernier ID connu (utiliser l'ID réel du canal)
         if (messages[0]) {
-          lastMessageIds.set(channelRef, messages[0].id);
+          lastMessageIds.set(realChannelId, messages[0].id);
         }
       } catch (e) {
         if (debug) console.error(`[telegram] POLL error for channel ${channelRef}:`, e.message);
@@ -329,13 +346,26 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
     // Initialiser les derniers IDs connus pour éviter de traiter les anciens messages
     (async () => {
+      const initializedChannelIds = new Set();
       for (const channelRef of channelsToCheck) {
         try {
           const entity = channelRef.startsWith('-100') ? BigInt(channelRef) : channelRef;
           const messages = await tg.getMessages(entity, { limit: 1 });
           if (messages && messages[0]) {
-            lastMessageIds.set(channelRef, messages[0].id);
-            if (debug) console.log(`[telegram] POLL: Initialized lastMessageId for ${channelRef}: ${messages[0].id}`);
+            // Extraire l'ID réel du canal
+            const realChannelId = messages[0]?.peerId?.channelId?.value?.toString() ||
+                                  messages[0]?.peerId?.channelId?.toString() ||
+                                  channelRef;
+
+            // Skip si déjà initialisé via un autre identifiant
+            if (initializedChannelIds.has(realChannelId)) {
+              if (debug) console.log(`[telegram] POLL: Skipping init for ${channelRef} (already initialized as ${realChannelId})`);
+              continue;
+            }
+            initializedChannelIds.add(realChannelId);
+
+            lastMessageIds.set(realChannelId, messages[0].id);
+            if (debug) console.log(`[telegram] POLL: Initialized lastMessageId for ${realChannelId} (via ${channelRef}): ${messages[0].id}`);
           }
         } catch (e) {
           if (debug) console.error(`[telegram] POLL init error for ${channelRef}:`, e.message);
