@@ -256,27 +256,33 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
   async function pollChannelMessages() {
     if (!tg || !tg.connected) return;
 
-    // Construire la liste des canaux à poller (IDs uniquement)
-    const channelIds = [...ids];
+    // Construire la liste des canaux à poller
+    // Utiliser les usernames si disponibles, sinon le format -100+ID pour les canaux
+    const channelsToCheck = [
+      ...[...handles],  // usernames en premier (plus fiables)
+      ...[...ids].map(id => `-100${id}`)  // format -100+ID pour les canaux
+    ];
 
-    for (const channelId of channelIds) {
+    for (const channelRef of channelsToCheck) {
       try {
         // Récupérer les 5 derniers messages du canal
-        const messages = await tg.getMessages(BigInt(channelId), { limit: 5 });
+        // Utiliser le username ou l'ID au format canal
+        const entity = channelRef.startsWith('-100') ? BigInt(channelRef) : channelRef;
+        const messages = await tg.getMessages(entity, { limit: 5 });
 
         if (!messages || messages.length === 0) continue;
 
         // Trier par ID décroissant (plus récent en premier)
         messages.sort((a, b) => b.id - a.id);
 
-        const lastKnownId = lastMessageIds.get(channelId) || 0;
+        const lastKnownId = lastMessageIds.get(channelRef) || 0;
 
         // Traiter les nouveaux messages (ceux avec un ID supérieur au dernier connu)
         for (const message of messages) {
           if (message.id <= lastKnownId) continue;
 
           if (debug) {
-            console.log(`[telegram] POLL: New message in ${channelId}, msgId=${message.id}`);
+            console.log(`[telegram] POLL: New message in ${channelRef}, msgId=${message.id}`);
           }
 
           // Créer un event-like pour réutiliser le handler existant
@@ -284,7 +290,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
             message: message,
             getChat: async () => {
               try {
-                return await tg.getEntity(BigInt(channelId));
+                return await tg.getEntity(entity);
               } catch (e) {
                 if (debug) console.log('[telegram] POLL getEntity error:', e.message);
                 return null;
@@ -302,10 +308,10 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
         // Mettre à jour le dernier ID connu
         if (messages[0]) {
-          lastMessageIds.set(channelId, messages[0].id);
+          lastMessageIds.set(channelRef, messages[0].id);
         }
       } catch (e) {
-        if (debug) console.error(`[telegram] POLL error for channel ${channelId}:`, e.message);
+        if (debug) console.error(`[telegram] POLL error for channel ${channelRef}:`, e.message);
       }
     }
   }
@@ -315,17 +321,24 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
 
     console.log(`[telegram] Starting message polling (interval: ${POLLING_INTERVAL / 1000}s)`);
 
+    // Construire la liste des canaux à poller
+    const channelsToCheck = [
+      ...[...handles],  // usernames en premier
+      ...[...ids].map(id => `-100${id}`)  // format -100+ID pour les canaux
+    ];
+
     // Initialiser les derniers IDs connus pour éviter de traiter les anciens messages
     (async () => {
-      for (const channelId of [...ids]) {
+      for (const channelRef of channelsToCheck) {
         try {
-          const messages = await tg.getMessages(BigInt(channelId), { limit: 1 });
+          const entity = channelRef.startsWith('-100') ? BigInt(channelRef) : channelRef;
+          const messages = await tg.getMessages(entity, { limit: 1 });
           if (messages && messages[0]) {
-            lastMessageIds.set(channelId, messages[0].id);
-            if (debug) console.log(`[telegram] POLL: Initialized lastMessageId for ${channelId}: ${messages[0].id}`);
+            lastMessageIds.set(channelRef, messages[0].id);
+            if (debug) console.log(`[telegram] POLL: Initialized lastMessageId for ${channelRef}: ${messages[0].id}`);
           }
         } catch (e) {
-          if (debug) console.error(`[telegram] POLL init error for ${channelId}:`, e.message);
+          if (debug) console.error(`[telegram] POLL init error for ${channelRef}:`, e.message);
         }
       }
       console.log('[telegram] POLL: Initialization complete');
