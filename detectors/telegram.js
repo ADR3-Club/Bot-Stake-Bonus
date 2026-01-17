@@ -834,14 +834,35 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
       // Supprimer TOUS les anciens handlers d'abord (méthode simple et fiable)
       tg.removeEventHandler();
 
-      // Ajouter le handler pour les nouveaux messages
+      // Construire la liste des chats à écouter explicitement
+      // Cela force GramJS à recevoir les messages même des canaux où on est simple abonné
+      // Inclure les IDs (en BigInt) ET les usernames (en string)
+      const chatsToWatch = [
+        ...[...ids].map(id => BigInt(id)),
+        ...[...handles]  // usernames comme strings
+      ];
+
+      // Construire le filtre : si des chats sont configurés, les spécifier explicitement
+      const filter = chatsToWatch.length > 0 ? { chats: chatsToWatch } : {};
+
+      if (chatsToWatch.length > 0) {
+        const idsStr = [...ids].join(', ');
+        const handlesStr = [...handles].join(', ');
+        console.log('[telegram] Registering handler for specific chats:');
+        if (ids.size > 0) console.log('[telegram]   IDs:', idsStr);
+        if (handles.size > 0) console.log('[telegram]   Handles:', handlesStr);
+      } else {
+        console.log('[telegram] Registering handler for ALL chats (no filter)');
+      }
+
+      // Ajouter le handler pour les nouveaux messages avec filtre explicite
       tg.addEventHandler(async (ev) => {
         try {
           await handler(ev, 'NEW');
         } catch (error) {
           console.error('[telegram] ✗ Handler NEW error:', error.message);
         }
-      }, new NewMessage({}));
+      }, new NewMessage(filter));
       console.log('[telegram] ✓ NewMessage handler enregistré');
 
       // Ajouter le handler pour les messages édités (si disponible)
@@ -852,7 +873,7 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
           } catch (error) {
             console.error('[telegram] ✗ Handler EDIT error:', error.message);
           }
-        }, new EditedCtor({}));
+        }, new EditedCtor(filter));
         console.log('[telegram] ✓ EditedMessage handler enregistré');
       } else {
         console.warn('[telegram] EditedMessage event not available in this GramJS version; edit events disabled.');
