@@ -248,6 +248,103 @@ export default async function useTelegramDetector(client, channelId, pingRoleId,
     } catch (e) { console.error('health ping error:', e.message); }
   }
 
+  // -------- Polling des messages (contourne la limitation des updates pour canaux où on est simple abonné)
+  const POLLING_INTERVAL = 10000; // 10 secondes
+  const lastMessageIds = new Map(); // channelId -> lastMessageId
+  let pollingInterval = null;
+
+  async function pollChannelMessages() {
+    if (!tg || !tg.connected) return;
+
+    // Construire la liste des canaux à poller (IDs uniquement)
+    const channelIds = [...ids];
+
+    for (const channelId of channelIds) {
+      try {
+        // Récupérer les 5 derniers messages du canal
+        const messages = await tg.getMessages(BigInt(channelId), { limit: 5 });
+
+        if (!messages || messages.length === 0) continue;
+
+        // Trier par ID décroissant (plus récent en premier)
+        messages.sort((a, b) => b.id - a.id);
+
+        const lastKnownId = lastMessageIds.get(channelId) || 0;
+
+        // Traiter les nouveaux messages (ceux avec un ID supérieur au dernier connu)
+        for (const message of messages) {
+          if (message.id <= lastKnownId) continue;
+
+          if (debug) {
+            console.log(`[telegram] POLL: New message in ${channelId}, msgId=${message.id}`);
+          }
+
+          // Créer un event-like pour réutiliser le handler existant
+          const eventLike = {
+            message: message,
+            getChat: async () => {
+              try {
+                return await tg.getEntity(BigInt(channelId));
+              } catch (e) {
+                if (debug) console.log('[telegram] POLL getEntity error:', e.message);
+                return null;
+              }
+            }
+          };
+
+          // Traiter le message via le handler existant
+          try {
+            await handler(eventLike, 'POLL');
+          } catch (e) {
+            console.error('[telegram] POLL handler error:', e.message);
+          }
+        }
+
+        // Mettre à jour le dernier ID connu
+        if (messages[0]) {
+          lastMessageIds.set(channelId, messages[0].id);
+        }
+      } catch (e) {
+        if (debug) console.error(`[telegram] POLL error for channel ${channelId}:`, e.message);
+      }
+    }
+  }
+
+  function startPolling() {
+    if (pollingInterval) return;
+
+    console.log(`[telegram] Starting message polling (interval: ${POLLING_INTERVAL / 1000}s)`);
+
+    // Initialiser les derniers IDs connus pour éviter de traiter les anciens messages
+    (async () => {
+      for (const channelId of [...ids]) {
+        try {
+          const messages = await tg.getMessages(BigInt(channelId), { limit: 1 });
+          if (messages && messages[0]) {
+            lastMessageIds.set(channelId, messages[0].id);
+            if (debug) console.log(`[telegram] POLL: Initialized lastMessageId for ${channelId}: ${messages[0].id}`);
+          }
+        } catch (e) {
+          if (debug) console.error(`[telegram] POLL init error for ${channelId}:`, e.message);
+        }
+      }
+      console.log('[telegram] POLL: Initialization complete');
+    })();
+
+    pollingInterval = setInterval(pollChannelMessages, POLLING_INTERVAL);
+  }
+
+  function stopPolling() {
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      pollingInterval = null;
+      console.log('[telegram] Polling stopped');
+    }
+  }
+
+  // Démarrer le polling après un court délai (pour laisser le temps à l'initialisation)
+  setTimeout(startPolling, 5000);
+
   // -------- Helpers
 
   const isStakeHost = (h) => h.replace(/^www\./i, '').toLowerCase() === 'playstake.club';
